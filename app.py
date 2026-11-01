@@ -13,6 +13,7 @@ import sqlite3
 import zipfile
 
 import pandas as pd
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -854,6 +855,78 @@ def import_books_from_zip(source, category, progress_callback=None):
                     progress_callback(i, total, filename)
         finally:
             conn.close()
+    return success_count, warnings
+
+
+def import_books_from_urls(urls, category, progress_callback=None):
+    """从直接下载链接导入单本图书或 ZIP；适合浏览器上传不可用时。"""
+    from urllib.parse import unquote, urlparse
+
+    success_count = 0
+    warnings = []
+    os.makedirs(BOOK_UPLOAD_DIR, exist_ok=True)
+    total = len(urls)
+    for i, url in enumerate(urls, start=1):
+        temp_path = None
+        try:
+            parsed = urlparse(url)
+            url_name = unquote(os.path.basename(parsed.path))
+            if not url_name:
+                url_name = f"链接图书_{i}.pdf"
+            fmt = os.path.splitext(url_name)[1].lower().lstrip(".")
+            with requests.get(url, stream=True, timeout=(15, 180),
+                              headers={"User-Agent": "Mozilla/5.0"}) as response:
+                response.raise_for_status()
+                disposition = response.headers.get("Content-Disposition", "")
+                if "filename=" in disposition:
+                    candidate = disposition.split("filename=")[-1].strip().strip('"')
+                    if candidate:
+                        url_name = os.path.basename(candidate)
+                        fmt = os.path.splitext(url_name)[1].lower().lstrip(".")
+                temp_path = os.path.join(
+                    BOOK_UPLOAD_DIR, f"url_{hashlib.md5(url.encode()).hexdigest()}.{fmt or 'bin'}")
+                size = 0
+                with open(temp_path, "wb") as target:
+                    for chunk in response.iter_content(1024 * 1024):
+                        if not chunk:
+                            continue
+                        size += len(chunk)
+                        if size > MAX_BOOK_UPLOAD_MB * 1024 * 1024:
+                            raise ValueError(f"文件超过 {MAX_BOOK_UPLOAD_MB}MB 上限")
+                        target.write(chunk)
+                if fmt == "zip":
+                    zip_success, zip_warnings = import_books_from_zip(
+                        temp_path, category)
+                    success_count += zip_success
+                    warnings.extend(zip_warnings)
+                elif fmt in BOOK_FILE_TYPES:
+                    with open(temp_path, "rb") as source:
+                        data = source.read()
+                    title = os.path.splitext(url_name)[0].strip() or "未命名图书"
+                    text, page_count, error = extract_book_content(data, url_name)
+                    conn = get_connection()
+                    try:
+                        upsert_book(
+                            conn, category, title, fmt, url_name,
+                            data, text, page_count)
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    success_count += 1
+                    if error:
+                        warnings.append(f"{url_name}：{error}")
+                else:
+                    warnings.append(f"{url_name}：不支持的文件类型")
+        except Exception as e:
+            warnings.append(f"{url}：下载/导入失败 {e}")
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+        if progress_callback:
+            progress_callback(i, total, url)
     return success_count, warnings
 
 
@@ -3054,6 +3127,33 @@ elif page == "⚙️ 典藏后台管理系统":
         with tab_books:
             st.subheader("📚 图书批量导入")
             st.caption("支持 PDF、DOC、DOCX、WPS、TXT、MD、RTF；书名取文件名（不含扩展名）。")
+            st.markdown("### 🔗 从链接导入（浏览器上传失败时使用）")
+            st.caption(
+                "每行一个直接下载链接，可单本图书或 ZIP；"
+                "可先把文件上传到 GitHub Releases，再粘贴各文件下载链接。")
+            url_category = st.selectbox(
+                "链接导入分类", BOOK_CATEGORIES, key="book_url_category")
+            url_text = st.text_area(
+                "图书直接下载链接（每行一个）",
+                height=110,
+                key="book_url_text",
+                placeholder="https://github.com/.../releases/download/.../book.pdf")
+            if st.button("开始从链接下载并导入", key="book_url_import_run"):
+                urls = [line.strip() for line in url_text.splitlines() if line.strip()]
+                if not urls:
+                    st.warning("请先粘贴至少一个直接下载链接。")
+                else:
+                    progress = st.progress(0.0, text="正在下载...")
+                    def _url_progress(i, total, url):
+                        progress.progress(
+                            i / total, text=f"已处理 {i}/{total}")
+                    success_count, warnings = import_books_from_urls(
+                        urls, url_category, _url_progress)
+                    progress.progress(1.0, text="链接导入完成")
+                    clear_search_caches()
+                    st.success(f"✅ 链接导入完成，成功 {success_count} 本。")
+                    for message in warnings:
+                        st.warning(message)
             render_chunk_book_uploader("batch")
             render_chunk_book_uploader("single")
             render_chunk_book_uploader("large")
