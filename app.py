@@ -11,6 +11,7 @@ import secrets
 import shutil
 import sqlite3
 import zipfile
+from datetime import datetime
 
 import pandas as pd
 import requests
@@ -81,6 +82,8 @@ PRELOADED_BOOK_URLS = [
     f"https://github.com/gdlfen/-/releases/download/v1/books_part{i}.zip"
     for i in range(1, 6)
 ]
+GITHUB_BACKUP_REPO = "gdlfen/-"
+GITHUB_BACKUP_TAG = "db-backup"
 
 FORMULA_TABLE = "formulas"
 RECIPE_TABLE = "recipes"
@@ -931,6 +934,86 @@ def import_books_from_urls(urls, category, progress_callback=None):
         if progress_callback:
             progress_callback(i, total, url)
     return success_count, warnings
+
+
+def get_github_backup_token():
+    try:
+        token = st.secrets.get("GITHUB_BACKUP_TOKEN", "")
+    except Exception:
+        token = ""
+    return token or os.environ.get("GITHUB_BACKUP_TOKEN", "")
+
+
+def upload_db_to_github_backup(token):
+    """把当前数据库上传为 GitHub Release 资产，返回下载链接。"""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "tcm-book-app",
+    }
+    api = f"https://api.github.com/repos/{GITHUB_BACKUP_REPO}"
+    response = requests.get(
+        f"{api}/releases/tags/{GITHUB_BACKUP_TAG}", headers=headers, timeout=30)
+    if response.status_code == 404:
+        response = requests.post(
+            f"{api}/releases",
+            headers=headers,
+            json={
+                "tag_name": GITHUB_BACKUP_TAG,
+                "target_commitish": "main",
+                "name": "数据库备份",
+                "body": "应用自动上传的数据库备份",
+            },
+            timeout=30)
+    response.raise_for_status()
+    release = response.json()
+    release_id = release["id"]
+
+    old_assets = requests.get(
+        f"{api}/releases/{release_id}/assets",
+        headers=headers, timeout=30).json()
+    for asset in old_assets:
+        if str(asset.get("name", "")).startswith("tcm_database_"):
+            requests.delete(
+                f"{api}/releases/assets/{asset['id']}",
+                headers=headers, timeout=30)
+
+    asset_name = f"tcm_database_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+    with open(DB_FILE, "rb") as source:
+        upload = requests.post(
+            f"https://uploads.github.com/repos/{GITHUB_BACKUP_REPO}/releases/{release_id}/assets",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(os.path.getsize(DB_FILE)),
+                "User-Agent": "tcm-book-app",
+            },
+            params={"name": asset_name},
+            data=source,
+            timeout=(30, 900))
+    upload.raise_for_status()
+    return upload.json().get("browser_download_url", "")
+
+
+def restore_db_from_url(url):
+    """从备份链接恢复数据库。"""
+    with requests.get(url, stream=True, timeout=(30, 600),
+                      headers={"User-Agent": "Mozilla/5.0"}) as response:
+        response.raise_for_status()
+        temp_path = BOOK_BACKUP_FILE + ".remote"
+        with open(temp_path, "wb") as target:
+            for chunk in response.iter_content(1024 * 1024):
+                if chunk:
+                    target.write(chunk)
+    if not is_valid_book_backup(temp_path):
+        try:
+            os.remove(temp_path)
+        except Exception:
+            pass
+        raise ValueError("下载的备份不是有效的图书数据库")
+    os.replace(temp_path, BOOK_BACKUP_FILE)
+    return restore_book_library_from_backup(force=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -3216,6 +3299,42 @@ elif page == "⚙️ 典藏后台管理系统":
                         st.warning("未找到该 ID 的图书。")
 
             st.caption("旧版 DOC/WPS 二进制文件若无法提取文字，暂不支持在线阅读。")
+            st.markdown("### ☁️ 一键备份到 GitHub")
+            backup_token = get_github_backup_token()
+            if not backup_token:
+                st.info(
+                    "尚未配置 GitHub 备份令牌。在 Streamlit Cloud 的 Secrets 中加入：\n\n"
+                    "GITHUB_BACKUP_TOKEN = \"ghp_你的令牌\"\n\n"
+                    "令牌需要 repo 权限。配置后重启应用即可一键上传完整数据库。")
+            else:
+                if st.button("上传当前数据库到 GitHub 备份", key="github_backup_upload"):
+                    try:
+                        with st.spinner("正在上传完整数据库，约需 1–3 分钟..."):
+                            backup_url = upload_db_to_github_backup(backup_token)
+                        st.success("✅ 备份已上传。")
+                        st.markdown(f"[⬇️ 下载完整数据库备份]({backup_url})")
+                    except Exception as e:
+                        st.error(f"GitHub 备份上传失败：{e}")
+                restore_url = st.text_input(
+                    "从备份链接恢复（GitHub 下载地址）",
+                    key="github_backup_restore_url",
+                    placeholder="https://github.com/gdlfen/-/releases/download/db-backup/tcm_database_....db")
+                if st.button("从链接恢复数据库", key="github_backup_restore_run"):
+                    if not restore_url.strip():
+                        st.warning("请先粘贴备份下载链接。")
+                    else:
+                        try:
+                            with st.spinner("正在下载并恢复数据库..."):
+                                ok = restore_db_from_url(restore_url.strip())
+                            if ok:
+                                clear_search_caches()
+                                st.success("✅ 数据库已恢复。")
+                                st.rerun()
+                            else:
+                                st.error("恢复失败，备份结构不正确。")
+                        except Exception as e:
+                            st.error(f"恢复失败：{e}")
+
             st.markdown("### 📦 图书库备份与恢复")
             st.caption(
                 "当前完整数据库按 8MB 分片下载。逐个选择分片并保存，"
