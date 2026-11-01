@@ -69,8 +69,7 @@ STATIC_DIR = os.path.join(
     os.path.dirname(os.path.abspath(DB_FILE)), "static")
 BOOK_BACKUP_STATIC = os.path.join(STATIC_DIR, "book_library_backup.db")
 
-BOOK_CATEGORIES = [
-    "基础理论类",
+BOOK_CATEGORIES = [    "基础理论类",
     "临床实践类",
     "方药本草类",
     "医案医话类",
@@ -78,6 +77,10 @@ BOOK_CATEGORIES = [
     "食疗养生类",
 ]
 BOOK_FILE_TYPES = ["pdf", "doc", "docx", "wps", "txt", "md", "rtf"]
+PRELOADED_BOOK_URLS = [
+    f"https://github.com/gdlfen/-/releases/download/v1/books_part{i}.zip"
+    for i in range(1, 6)
+]
 
 FORMULA_TABLE = "formulas"
 RECIPE_TABLE = "recipes"
@@ -3154,9 +3157,23 @@ elif page == "⚙️ 典藏后台管理系统":
                     st.success(f"✅ 链接导入完成，成功 {success_count} 本。")
                     for message in warnings:
                         st.warning(message)
-            render_chunk_book_uploader("batch")
-            render_chunk_book_uploader("single")
-            render_chunk_book_uploader("large")
+            if st.button("📥 一键下载并导入已上传的 5 个图书分卷",
+                         type="primary", key="book_url_preloaded_run"):
+                progress = st.progress(0.0, text="正在从 GitHub 下载 5 个分卷，约 263MB...")
+                def _preload_progress(i, total, url):
+                    progress.progress(
+                        i / total, text=f"已处理 {i}/{total} 个分卷")
+                success_count, warnings = import_books_from_urls(
+                    PRELOADED_BOOK_URLS, url_category, _preload_progress)
+                progress.progress(1.0, text="分卷导入完成")
+                clear_search_caches()
+                st.success(f"✅ 分卷导入完成，成功 {success_count} 本。")
+                for message in warnings:
+                    st.warning(message)
+            st.info(
+                "云端直接上传偶发卡住，请优先使用上面的链接导入；"
+                "分卷下载期间页面可能长时间没有百分比变化，请耐心等待。")
+            st.caption("直接上传入口在云端不稳定，暂时收起；请使用上面的链接导入。")
 
             st.markdown("### 现有图书")
             conn = get_connection()
