@@ -864,7 +864,7 @@ def import_books_from_zip(source, category, progress_callback=None):
     return success_count, warnings
 
 
-def import_books_from_urls(urls, category, progress_callback=None):
+def import_books_from_urls(urls, category, progress_callback=None, byte_callback=None):
     """从直接下载链接导入单本图书或 ZIP；适合浏览器上传不可用时。"""
     from urllib.parse import unquote, urlparse
 
@@ -892,6 +892,7 @@ def import_books_from_urls(urls, category, progress_callback=None):
                 temp_path = os.path.join(
                     BOOK_UPLOAD_DIR, f"url_{hashlib.md5(url.encode()).hexdigest()}.{fmt or 'bin'}")
                 size = 0
+                total_bytes = int(response.headers.get("Content-Length", 0) or 0)
                 with open(temp_path, "wb") as target:
                     for chunk in response.iter_content(1024 * 1024):
                         if not chunk:
@@ -900,6 +901,8 @@ def import_books_from_urls(urls, category, progress_callback=None):
                         if size > MAX_BOOK_UPLOAD_MB * 1024 * 1024:
                             raise ValueError(f"文件超过 {MAX_BOOK_UPLOAD_MB}MB 上限")
                         target.write(chunk)
+                        if byte_callback:
+                            byte_callback(size, total_bytes)
                 if fmt == "zip":
                     zip_success, zip_warnings = import_books_from_zip(
                         temp_path, category)
@@ -3230,11 +3233,16 @@ elif page == "⚙️ 典藏后台管理系统":
                     st.warning("请先粘贴至少一个直接下载链接。")
                 else:
                     progress = st.progress(0.0, text="正在下载...")
+                    def _url_bytes(done, total):
+                        if total:
+                            progress.progress(
+                                min(done / total, 1.0),
+                                text=f"正在下载：{done / 1024 / 1024:.0f} / {total / 1024 / 1024:.0f} MB")
                     def _url_progress(i, total, url):
                         progress.progress(
                             i / total, text=f"已处理 {i}/{total}")
                     success_count, warnings = import_books_from_urls(
-                        urls, url_category, _url_progress)
+                        urls, url_category, _url_progress, _url_bytes)
                     progress.progress(1.0, text="链接导入完成")
                     clear_search_caches()
                     st.success(f"✅ 链接导入完成，成功 {success_count} 本。")
@@ -3243,11 +3251,16 @@ elif page == "⚙️ 典藏后台管理系统":
             if st.button("📥 一键下载并导入已上传的 5 个图书分卷",
                          type="primary", key="book_url_preloaded_run"):
                 progress = st.progress(0.0, text="正在从 GitHub 下载 5 个分卷，约 263MB...")
+                def _preload_bytes(done, total):
+                    if total:
+                        progress.progress(
+                            min(done / total, 1.0),
+                            text=f"正在下载：{done / 1024 / 1024:.0f} / {total / 1024 / 1024:.0f} MB")
                 def _preload_progress(i, total, url):
                     progress.progress(
                         i / total, text=f"已处理 {i}/{total} 个分卷")
                 success_count, warnings = import_books_from_urls(
-                    PRELOADED_BOOK_URLS, url_category, _preload_progress)
+                    PRELOADED_BOOK_URLS, url_category, _preload_progress, _preload_bytes)
                 progress.progress(1.0, text="分卷导入完成")
                 clear_search_caches()
                 st.success(f"✅ 分卷导入完成，成功 {success_count} 本。")
