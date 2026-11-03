@@ -3202,7 +3202,12 @@ elif page == "⚙️ 典藏后台管理系统":
                             if target_table == FORMULA_TABLE and '方剂名' in combined_df.columns:
                                 combined_df.drop_duplicates(subset=['方剂名', '临床病名'], keep='last', inplace=True)
                             elif target_table == RECIPE_TABLE and '菜名' in combined_df.columns:
-                                combined_df.drop_duplicates(subset=['菜名'], keep='last', inplace=True)
+                                # 食谱以“菜名 + 材料和制作”为唯一键，后导入覆盖先导入
+                                recipe_keys = ['菜名']
+                                if '材料和制作' in combined_df.columns:
+                                    recipe_keys.append('材料和制作')
+                                combined_df.drop_duplicates(
+                                    subset=recipe_keys, keep='last', inplace=True)
 
                             combined_df.to_sql(target_table, conn, if_exists="replace", index=False)
                             rebuild_imported_table(conn, target_table, TABLE_COLUMNS[target_table])
