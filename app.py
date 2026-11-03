@@ -3232,7 +3232,9 @@ elif page == "⚙️ 典藏后台管理系统":
                 if not urls:
                     st.warning("请先粘贴至少一个直接下载链接。")
                 else:
-                    progress = st.progress(0.0, text="正在下载...")
+                    status_box = st.status(
+                        "正在从链接下载并导入，请勿刷新页面...", expanded=True)
+                    progress = st.progress(0.0, text="正在连接下载地址...")
                     def _url_bytes(done, total):
                         if total:
                             progress.progress(
@@ -3244,12 +3246,18 @@ elif page == "⚙️ 典藏后台管理系统":
                     success_count, warnings = import_books_from_urls(
                         urls, url_category, _url_progress, _url_bytes)
                     progress.progress(1.0, text="链接导入完成")
+                    status_box.update(
+                        label=f"链接导入完成，成功 {success_count} 本",
+                        state="complete", expanded=False)
                     clear_search_caches()
                     st.success(f"✅ 链接导入完成，成功 {success_count} 本。")
                     for message in warnings:
                         st.warning(message)
             if st.button("📥 一键下载并导入已上传的 5 个图书分卷",
                          type="primary", key="book_url_preloaded_run"):
+                status_box = st.status(
+                    "正在从 GitHub 下载 5 个分卷，约 263MB，请勿刷新...",
+                    expanded=True)
                 progress = st.progress(0.0, text="正在从 GitHub 下载 5 个分卷，约 263MB...")
                 def _preload_bytes(done, total):
                     if total:
@@ -3262,6 +3270,9 @@ elif page == "⚙️ 典藏后台管理系统":
                 success_count, warnings = import_books_from_urls(
                     PRELOADED_BOOK_URLS, url_category, _preload_progress, _preload_bytes)
                 progress.progress(1.0, text="分卷导入完成")
+                status_box.update(
+                    label=f"分卷导入完成，成功 {success_count} 本",
+                    state="complete", expanded=False)
                 clear_search_caches()
                 st.success(f"✅ 分卷导入完成，成功 {success_count} 本。")
                 for message in warnings:
