@@ -2829,9 +2829,9 @@ elif page == "⚙️ 典藏后台管理系统":
     else:
         st.success("✅ 身份验证通过：田 夫 (为了系统流畅，请规范操作)")
 
-        tab_stat, tab_edit, tab_import, tab_password, tab_danger, tab_books = st.tabs([
-            "📊 数据统计", "✏️ 数据维护(增删)", "📁 批量导入",
-            "🔐 密码管理", "⚠️ 高危操作", "📚 图书库"
+        tab_stat, tab_password, tab_danger, tab_edit, tab_import, tab_books = st.tabs([
+            "📊 数据统计", "🔐 密码管理", "⚠️ 高危操作",
+            "✏️ 数据维护(增删)", "📁 批量导入", "📚 图书库"
         ])
 
         with tab_stat:
@@ -3105,7 +3105,11 @@ elif page == "⚙️ 典藏后台管理系统":
                 st.caption("各种验方表模板列：方名、方剂及用法、主治疾病、症状、案例、出处。")
 
             if uploaded_file is not None:
-                xls = pd.ExcelFile(uploaded_file)
+                try:
+                    xls = pd.ExcelFile(uploaded_file)
+                except Exception as e:
+                    st.error(f"Excel 文件读取失败，请重新上传：{e}")
+                    st.stop()
                 st.write(f"📂 检测到 {len(xls.sheet_names)} 个工作表")
                 if st.button("开始批量读取并智能去重导入", type="primary", key="admin_import_run"):
                     try:
