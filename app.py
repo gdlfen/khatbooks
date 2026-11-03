@@ -3206,12 +3206,21 @@ elif page == "⚙️ 典藏后台管理系统":
                             if target_table == FORMULA_TABLE and '方剂名' in combined_df.columns:
                                 combined_df.drop_duplicates(subset=['方剂名', '临床病名'], keep='last', inplace=True)
                             elif target_table == RECIPE_TABLE and '菜名' in combined_df.columns:
-                                # 食谱以“菜名 + 材料和制作”为唯一键，后导入覆盖先导入
-                                recipe_keys = ['菜名']
+                                # 食谱以“菜名 + 材料和制作”为唯一键，后导入覆盖先导入。
+                                # 归一化空白字符，避免同一内容因换行/空格不同而保留两条。
+                                recipe_name = combined_df['菜名'].fillna('').astype(str).str.strip()
                                 if '材料和制作' in combined_df.columns:
-                                    recipe_keys.append('材料和制作')
+                                    recipe_material = (
+                                        combined_df['材料和制作'].fillna('')
+                                        .astype(str)
+                                        .str.replace(r'\s+', '', regex=True))
+                                    recipe_key = recipe_name + '\x1f' + recipe_material
+                                else:
+                                    recipe_key = recipe_name
+                                combined_df['__recipe_key'] = recipe_key
                                 combined_df.drop_duplicates(
-                                    subset=recipe_keys, keep='last', inplace=True)
+                                    subset=['__recipe_key'], keep='last', inplace=True)
+                                combined_df.drop(columns=['__recipe_key'], inplace=True)
 
                             combined_df.to_sql(target_table, conn, if_exists="replace", index=False)
                             rebuild_imported_table(conn, target_table, TABLE_COLUMNS[target_table])
