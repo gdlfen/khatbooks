@@ -2123,7 +2123,7 @@ if page == "🏠 系统总览":
         "margin-bottom:0.5rem;'>欢迎使用《中医典藏检索系统》！</div>",
         unsafe_allow_html=True)
     st.markdown(
-        "该系统功能有：**传世名方基础检索、传世名方 AI 检索、图书阅读、"
+        "该系统功能有：**传世名方基础检索、传世名方 AI 检索、医养图书阅读、"
         "各种验方检索、四季养生食谱检索**。")
     st.info("请点开左侧“模块导航”，选择您需要的功能选项。")
     st.markdown(
@@ -3145,24 +3145,24 @@ elif page == "⚙️ 典藏后台管理系统":
                             verif_col_sql = ", ".join(f'"{c}"' for c in VERIF_COLUMNS)
                             old_df = pd.read_sql(
                                 f'SELECT {verif_col_sql} FROM "{VERIF_TABLE}"', conn)
-                            existing = {
-                                tuple(safe_text(r[c]) for c in VERIF_COLUMNS)
-                                for _, r in old_df.iterrows()
-                            }
-                            rows_to_insert = []
+                            # 以后导入为准：按“方名 + 主治疾病”覆盖旧记录
+                            latest_rows = {}
                             for _, r in new_data.iterrows():
                                 values = tuple(safe_text(r[c]) for c in VERIF_COLUMNS)
-                                if not any(values) or values in existing:
+                                if not any(values):
                                     continue
-                                rows_to_insert.append(values)
-                                existing.add(values)
-                            if rows_to_insert:
+                                latest_rows[(values[0], values[2])] = values
+                            for key in latest_rows:
+                                conn.execute(
+                                    f'DELETE FROM "{VERIF_TABLE}" '
+                                    "WHERE 方名=? AND 主治疾病=?", key)
+                            if latest_rows:
                                 conn.executemany(
                                     f'INSERT INTO "{VERIF_TABLE}" '
                                     "(方名, 方剂及用法, 主治疾病, 症状, 案例, 出处) "
                                     "VALUES (?,?,?,?,?,?)",
-                                    rows_to_insert)
-                            inserted = len(rows_to_insert)
+                                    list(latest_rows.values()))
+                            inserted = len(latest_rows)
                             conn.commit()
                             total = conn.execute(
                                 f'SELECT COUNT(*) FROM "{VERIF_TABLE}"').fetchone()[0]
