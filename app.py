@@ -2829,9 +2829,9 @@ elif page == "⚙️ 典藏后台管理系统":
     else:
         st.success("✅ 身份验证通过：田 夫 (为了系统流畅，请规范操作)")
 
-        tab_stat, tab_edit, tab_import, tab_books, tab_password, tab_danger = st.tabs([
+        tab_stat, tab_edit, tab_import, tab_password, tab_danger, tab_books = st.tabs([
             "📊 数据统计", "✏️ 数据维护(增删)", "📁 批量导入",
-            "📚 图书库", "🔐 密码管理", "⚠️ 高危操作"
+            "🔐 密码管理", "⚠️ 高危操作", "📚 图书库"
         ])
 
         with tab_stat:
