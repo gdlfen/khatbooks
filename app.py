@@ -3234,6 +3234,9 @@ elif page == "⚙️ 典藏后台管理系统":
                             if "id" in new_data.columns:
                                 new_data = new_data.drop(columns=["id"])
 
+                            # 后导入行的空单元格保留为空，覆盖旧内容，不沿用旧值
+                            new_data = new_data.fillna("")
+
                             # 兼容旧版食谱表头：功效和注意事项 -> 功效；季节功能 -> 注意事项
                             if target_table == RECIPE_TABLE:
                                 if "功效和注意事项" in new_data.columns:
