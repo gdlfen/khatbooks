@@ -587,6 +587,14 @@ def safe_text(value, default=""):
     return str(value).strip()
 
 
+def normalize_dedupe_text(value):
+    """归一化菜名/材料文本，用于识别仅空格、换行、标点不同的重复项。"""
+    text = safe_text(value).lower()
+    text = re.sub(r"[\s\u3000]+", "", text)
+    text = re.sub(r"[，。；：、,.;:!?！？\-—_（）()【】\[\]“”\"'‘’]", "", text)
+    return text
+
+
 def feature_title(text):
     """功能页标题统一缩小一号。"""
     st.markdown(
@@ -2867,6 +2875,50 @@ elif page == "⚙️ 典藏后台管理系统":
             st.subheader("✏️ 数据精确定向维护")
             st.warning("⚠️ 数据库体积庞大，全量铺开会导致浏览器崩溃卡死。请通过下方表单精确完成录入、修改与删除。")
 
+            st.markdown("#### 🧹 一键清理重复食谱")
+            st.caption(
+                "按“归一化菜名 + 归一化材料和制作”识别重复，保留 ID 最大的一条；"
+                "菜名相同但材料做法确实不同的食谱不会被删除。")
+            if st.button("扫描重复食谱", key="scan_recipe_duplicates"):
+                conn = get_connection()
+                try:
+                    dup_df = pd.read_sql(
+                        "SELECT id, 菜名, 材料和制作 FROM recipes ORDER BY id", conn)
+                finally:
+                    conn.close()
+                dup_df["_key"] = (
+                    dup_df["菜名"].map(normalize_dedupe_text)
+                    + "\x1f"
+                    + dup_df["材料和制作"].map(normalize_dedupe_text))
+                old_dups = dup_df[dup_df.duplicated(subset=["_key"], keep="last")]
+                st.session_state["recipe_dup_ids"] = [
+                    int(v) for v in old_dups["id"].tolist()]
+                st.session_state["recipe_dup_preview"] = old_dups[
+                    ["id", "菜名"]].head(20)
+            dup_ids = st.session_state.get("recipe_dup_ids", [])
+            if dup_ids:
+                st.warning(f"发现 {len(dup_ids)} 条旧重复食谱，将保留每组最后导入的一条。")
+                preview = st.session_state.get("recipe_dup_preview")
+                if preview is not None and not preview.empty:
+                    st.dataframe(preview, hide_index=True)
+                if st.button("确认删除这些旧重复项", key="delete_recipe_duplicates"):
+                    conn = get_connection()
+                    try:
+                        placeholders = ",".join("?" for _ in dup_ids)
+                        conn.execute(
+                            f"DELETE FROM recipes WHERE id IN ({placeholders})",
+                            tuple(dup_ids))
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    clear_search_caches()
+                    st.session_state.pop("recipe_dup_ids", None)
+                    st.session_state.pop("recipe_dup_preview", None)
+                    st.success(f"✅ 已清理 {len(dup_ids)} 条重复食谱。")
+                    st.rerun()
+            elif "recipe_dup_ids" in st.session_state:
+                st.info("没有发现按当前规则重复的食谱。")
+
             action_type = st.radio(
                 "请选择执行的操作",
                 ["➕ 新增记录", "🔍 搜索与修改", "🗑️ 定向删除"],
@@ -3207,13 +3259,11 @@ elif page == "⚙️ 典藏后台管理系统":
                                 combined_df.drop_duplicates(subset=['方剂名', '临床病名'], keep='last', inplace=True)
                             elif target_table == RECIPE_TABLE and '菜名' in combined_df.columns:
                                 # 食谱以“菜名 + 材料和制作”为唯一键，后导入覆盖先导入。
-                                # 归一化空白字符，避免同一内容因换行/空格不同而保留两条。
-                                recipe_name = combined_df['菜名'].fillna('').astype(str).str.strip()
+                                # 归一化空格、换行和标点，避免同一内容因格式差异保留两条。
+                                recipe_name = combined_df['菜名'].map(normalize_dedupe_text)
                                 if '材料和制作' in combined_df.columns:
-                                    recipe_material = (
-                                        combined_df['材料和制作'].fillna('')
-                                        .astype(str)
-                                        .str.replace(r'\s+', '', regex=True))
+                                    recipe_material = combined_df['材料和制作'].map(
+                                        normalize_dedupe_text)
                                     recipe_key = recipe_name + '\x1f' + recipe_material
                                 else:
                                     recipe_key = recipe_name
