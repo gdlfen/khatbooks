@@ -82,7 +82,7 @@ PRELOADED_BOOK_URLS = [
     f"https://github.com/gdlfen/-/releases/download/v1/books_part{i}.zip"
     for i in range(1, 6)
 ]
-GITHUB_BACKUP_REPO = "gdlfen/-"
+GITHUB_BACKUP_REPO = "gdlfen/khatbooks"
 GITHUB_BACKUP_TAG = "db-backup"
 
 FORMULA_TABLE = "formulas"
@@ -356,6 +356,75 @@ def ensure_schema(conn):
     migrate_verif_table(conn)
     ensure_admin_password(conn)
     conn.commit()
+
+
+def restore_db_from_github_on_startup():
+    """容器重置后，若本地数据库不存在，优先从 GitHub 备份恢复。"""
+    if os.path.exists(DB_FILE):
+        return False
+    try:
+        token = st.secrets.get("GITHUB_BACKUP_TOKEN", "")
+    except Exception:
+        token = ""
+    token = token or os.environ.get("GITHUB_BACKUP_TOKEN", "")
+    if not token:
+        return False
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "tcm-book-app",
+    }
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{GITHUB_BACKUP_REPO}"
+            f"/releases/tags/{GITHUB_BACKUP_TAG}",
+            headers=headers, timeout=30)
+        if response.status_code != 200:
+            return False
+        assets = [
+            item for item in response.json().get("assets", [])
+            if str(item.get("name", "")).startswith("tcm_database_")
+            and str(item.get("name", "")).endswith(".db")
+        ]
+        if not assets:
+            return False
+        asset = sorted(assets, key=lambda x: x.get("created_at", ""))[-1]
+        temp_path = DB_FILE + ".startup_download"
+        with requests.get(
+                asset["browser_download_url"], headers=headers,
+                stream=True, timeout=(30, 900)) as download:
+            download.raise_for_status()
+            with open(temp_path, "wb") as target:
+                for chunk in download.iter_content(1024 * 1024):
+                    if chunk:
+                        target.write(chunk)
+        with open(temp_path, "rb") as check:
+            if check.read(16) != b"SQLite format 3\x00":
+                raise ValueError("not sqlite")
+        conn = sqlite3.connect(temp_path)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
+        finally:
+            conn.close()
+        if count <= 0:
+            raise ValueError("no books")
+        os.replace(temp_path, DB_FILE)
+        try:
+            with open(DB_FILE + ".last_cloud_backup", "w", encoding="utf-8") as marker:
+                marker.write(str(int(os.path.getmtime(DB_FILE))))
+        except Exception:
+            pass
+        return True
+    except Exception:
+        try:
+            if os.path.exists(DB_FILE + ".startup_download"):
+                os.remove(DB_FILE + ".startup_download")
+        except Exception:
+            pass
+        return False
+
+
+restore_db_from_github_on_startup()
 
 
 @st.cache_resource
@@ -981,15 +1050,6 @@ def upload_db_to_github_backup(token):
     release = response.json()
     release_id = release["id"]
 
-    old_assets = requests.get(
-        f"{api}/releases/{release_id}/assets",
-        headers=headers, timeout=30).json()
-    for asset in old_assets:
-        if str(asset.get("name", "")).startswith("tcm_database_"):
-            requests.delete(
-                f"{api}/releases/assets/{asset['id']}",
-                headers=headers, timeout=30)
-
     asset_name = f"tcm_database_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
     with open(DB_FILE, "rb") as source:
         upload = requests.post(
@@ -1004,6 +1064,18 @@ def upload_db_to_github_backup(token):
             data=source,
             timeout=(30, 900))
     upload.raise_for_status()
+
+    # 新备份上传成功后再删除旧备份，避免上传失败导致没有任何可用备份
+    old_assets = requests.get(
+        f"{api}/releases/{release_id}/assets",
+        headers=headers, timeout=30).json()
+    for asset in old_assets:
+        old_name = str(asset.get("name", ""))
+        if old_name.startswith("tcm_database_") and old_name.endswith(".db") \
+                and old_name != asset_name:
+            requests.delete(
+                f"{api}/releases/assets/{asset['id']}",
+                headers=headers, timeout=30)
     return upload.json().get("browser_download_url", "")
 
 
@@ -1025,6 +1097,42 @@ def restore_db_from_url(url):
         raise ValueError("下载的备份不是有效的图书数据库")
     os.replace(temp_path, BOOK_BACKUP_FILE)
     return restore_book_library_from_backup(force=True)
+
+
+def auto_backup_if_changed():
+    """数据库有变化时自动上传到 GitHub Release；用标记文件避免重复上传。"""
+    token = get_github_backup_token()
+    if not token or not os.path.exists(DB_FILE):
+        return
+    try:
+        mtime = int(os.path.getmtime(DB_FILE))
+        marker = DB_FILE + ".last_cloud_backup"
+        if os.path.exists(marker):
+            try:
+                with open(marker, "r", encoding="utf-8") as f:
+                    if int(f.read().strip() or 0) >= mtime:
+                        return
+            except Exception:
+                pass
+        upload_db_to_github_backup(token)
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(str(mtime))
+    except Exception as e:
+        try:
+            st.warning(f"数据库云端备份失败：{e}")
+        except Exception:
+            pass
+
+
+_original_streamlit_rerun = st.rerun
+
+
+def _rerun_with_cloud_backup(*args, **kwargs):
+    auto_backup_if_changed()
+    return _original_streamlit_rerun(*args, **kwargs)
+
+
+st.rerun = _rerun_with_cloud_backup
 
 
 @st.cache_data(show_spinner=False)
@@ -3593,3 +3701,6 @@ elif page == "⚙️ 典藏后台管理系统":
                     st.success(f"💀 核心指令已下达，【{clear_table}】已被永久清空。")
                 else:
                     st.warning("防误触锁生效：口令不正确。")
+
+
+auto_backup_if_changed()
