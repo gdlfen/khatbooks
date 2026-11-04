@@ -1124,17 +1124,6 @@ def auto_backup_if_changed():
             pass
 
 
-_original_streamlit_rerun = st.rerun
-
-
-def _rerun_with_cloud_backup(*args, **kwargs):
-    auto_backup_if_changed()
-    return _original_streamlit_rerun(*args, **kwargs)
-
-
-st.rerun = _rerun_with_cloud_backup
-
-
 @st.cache_data(show_spinner=False)
 def load_books(category):
     conn = get_connection()
@@ -3701,6 +3690,3 @@ elif page == "⚙️ 典藏后台管理系统":
                     st.success(f"💀 核心指令已下达，【{clear_table}】已被永久清空。")
                 else:
                     st.warning("防误触锁生效：口令不正确。")
-
-
-auto_backup_if_changed()
