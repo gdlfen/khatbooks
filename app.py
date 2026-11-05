@@ -2631,14 +2631,18 @@ elif page == "📚 图书阅读":
                     page_slider_key = f"text_page_slider_{book_id}"
                     force_key = f"text_force_page_{book_id}"
                     force_page = st.session_state.pop(force_key, False)
-                    if force_page or page_slider_key not in st.session_state:
+                    if (force_page or page_slider_key not in st.session_state
+                            or st.session_state.get(page_slider_key, 1) > len(pages)):
                         st.session_state[page_slider_key] = page_index + 1
-                    selected_page = st.slider(
-                        "左右拖动翻页", 1, len(pages), key=page_slider_key)
-                    if selected_page != page_index + 1:
-                        save_reading_position(book_id, pages[selected_page - 1][0])
-                        st.session_state[force_key] = True
-                        st.rerun()
+                    if len(pages) > 1:
+                        selected_page = st.slider(
+                            "左右拖动翻页", 1, len(pages), key=page_slider_key)
+                        if selected_page != page_index + 1:
+                            save_reading_position(book_id, pages[selected_page - 1][0])
+                            st.session_state[force_key] = True
+                            st.rerun()
+                    else:
+                        st.caption("本书只有 1 页。")
                     render_book_nav(
                         book_id, page_index, pages, "bottom", force_key)
             elif safe_text(fmt) == "pdf":
@@ -2678,14 +2682,18 @@ elif page == "📚 图书阅读":
                         page_slider_key = f"pdf_page_slider_{book_id}"
                         force_key = f"pdf_force_page_{book_id}"
                         force_page = st.session_state.pop(force_key, False)
-                        if force_page or page_slider_key not in st.session_state:
+                        if (force_page or page_slider_key not in st.session_state
+                                or st.session_state.get(page_slider_key, 1) > total_pages):
                             st.session_state[page_slider_key] = page
-                        selected_page = st.slider(
-                            "左右拖动翻页", 1, total_pages, key=page_slider_key)
-                        if selected_page != page:
-                            save_reading_position(book_id, selected_page - 1)
-                            st.session_state[force_key] = True
-                            st.rerun()
+                        if total_pages > 1:
+                            selected_page = st.slider(
+                                "左右拖动翻页", 1, total_pages, key=page_slider_key)
+                            if selected_page != page:
+                                save_reading_position(book_id, selected_page - 1)
+                                st.session_state[force_key] = True
+                                st.rerun()
+                        else:
+                            st.caption("本 PDF 只有 1 页。")
 
                         prev_col, info_col, next_col = st.columns([1, 2, 1])
                         with prev_col:
