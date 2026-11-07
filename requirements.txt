@@ -6,3 +6,4 @@ pypdf
 python-docx
 pypdfium2
 requests
+boto3

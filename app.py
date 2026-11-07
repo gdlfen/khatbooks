@@ -1192,6 +1192,47 @@ def load_book_file(book_id):
         conn.close()
 
 
+@st.cache_resource
+def get_b2_client():
+    """B2 的 S3 兼容客户端；未配置时返回 None，阅读器回退到本地 PDF。"""
+    try:
+        import boto3
+        from botocore.config import Config
+
+        return boto3.client(
+            "s3",
+            endpoint_url=st.secrets["B2_ENDPOINT"],
+            aws_access_key_id=st.secrets["B2_KEY_ID"],
+            aws_secret_access_key=st.secrets["B2_APP_KEY"],
+            region_name=st.secrets.get("B2_REGION", "us-west-004"),
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+            ),
+        )
+    except Exception:
+        return None
+
+
+@st.cache_data(show_spinner=False, ttl=3000)
+def get_b2_page_url(book_id, page_no):
+    """生成单页图片的临时下载地址，浏览器直接向 B2 取图，不经过应用内存。"""
+    client = get_b2_client()
+    if client is None:
+        return None
+    try:
+        return client.generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": st.secrets["B2_BUCKET"],
+                "Key": f"pages/{book_id}/{page_no:04d}.webp",
+            },
+            ExpiresIn=3600,
+        )
+    except Exception:
+        return None
+
+
 def get_pdf_page_count(data):
     try:
         import pypdfium2 as pdfium
@@ -2689,26 +2730,39 @@ elif page == "📚 图书阅读":
                     render_book_nav(
                         book_id, page_index, pages, "bottom", force_key)
             elif safe_text(fmt) == "pdf":
-                bytes_key = f"pdf_bytes_{book_id}"
-                if bytes_key not in st.session_state:
-                    st.session_state[bytes_key] = load_book_file(book_id)
-                content = st.session_state.get(bytes_key)
-                if content:
-                    total_pages = int(page_count or 0) or get_pdf_page_count(content)
-                    if total_pages <= 0:
-                        st.warning("无法读取 PDF 页数，暂时无法在网页中打开。")
-                    else:
-                        page = max(1, min(get_reading_position(book_id) + 1, total_pages))
-                        st.info(
-                            "该 PDF 未提取到文字（可能是扫描版），按原版页面渲染阅读；"
-                            "页面可上下滚动，底部滑块左右拖动翻页，页码会自动记忆。")
-                        pdf_zoom = st.slider(
-                            "PDF 缩放", 1.0, 3.0, 1.5, 0.1, key=f"pdf_zoom_{book_id}")
+                total_pages = int(page_count or 0)
+                if total_pages <= 0:
+                    content = load_book_file(book_id)
+                    total_pages = get_pdf_page_count(content) if content else 0
+                if total_pages <= 0:
+                    st.warning("无法读取 PDF 页数，暂时无法在网页中打开。")
+                else:
+                    page = max(1, min(get_reading_position(book_id) + 1, total_pages))
+                    st.info(
+                        "该 PDF 未提取到文字（可能是扫描版），按原版页面渲染阅读；"
+                        "页面可上下滚动，底部滑块左右拖动翻页，页码会自动记忆。")
+                    pdf_zoom = st.slider(
+                        "PDF 缩放", 1.0, 3.0, 1.5, 0.1, key=f"pdf_zoom_{book_id}")
 
-                        image_data = render_pdf_page_cached(book_id, content, page - 1)
+                    zoom_percent = int(round(pdf_zoom * 100))
+                    page_url = get_b2_page_url(book_id, page)
+                    if page_url:
+                        st.markdown(
+                            '<div id="tcm-reader-content" class="page-fade" style="overflow:auto;max-height:82vh;'
+                            'border:1px solid #E8DCC4;border-radius:8px;'
+                            'background:#FFFFFF;padding:8px;">'
+                            f'<img src="{html.escape(page_url, quote=True)}" '
+                            f'style="width:{zoom_percent}%;max-width:none;display:block;'
+                            'margin:0 auto;" />'
+                            '</div>',
+                            unsafe_allow_html=True)
+                        st.caption(f"当前缩放：{zoom_percent}%")
+                    else:
+                        content = load_book_file(book_id)
+                        image_data = render_pdf_page_cached(
+                            book_id, content, page - 1) if content else None
                         if image_data:
                             image_b64 = base64.b64encode(image_data).decode("ascii")
-                            zoom_percent = int(round(pdf_zoom * 100))
                             st.markdown(
                                 '<div id="tcm-reader-content" class="page-fade" style="overflow:auto;max-height:82vh;'
                                 'border:1px solid #E8DCC4;border-radius:8px;'
@@ -2722,43 +2776,41 @@ elif page == "📚 图书阅读":
                         else:
                             st.warning("PDF 页面渲染失败，暂时无法在网页中显示。")
 
-                        page_slider_key = f"pdf_page_slider_{book_id}"
-                        force_key = f"pdf_force_page_{book_id}"
-                        force_page = st.session_state.pop(force_key, False)
-                        if (force_page or page_slider_key not in st.session_state
-                                or st.session_state.get(page_slider_key, 1) > total_pages):
-                            st.session_state[page_slider_key] = page
-                        if total_pages > 1:
-                            selected_page = st.slider(
-                                "左右拖动翻页", 1, total_pages, key=page_slider_key)
-                            if selected_page != page:
-                                save_reading_position(book_id, selected_page - 1)
-                                st.session_state[force_key] = True
-                                st.rerun()
-                        else:
-                            st.caption("本 PDF 只有 1 页。")
+                    page_slider_key = f"pdf_page_slider_{book_id}"
+                    force_key = f"pdf_force_page_{book_id}"
+                    force_page = st.session_state.pop(force_key, False)
+                    if (force_page or page_slider_key not in st.session_state
+                            or st.session_state.get(page_slider_key, 1) > total_pages):
+                        st.session_state[page_slider_key] = page
+                    if total_pages > 1:
+                        selected_page = st.slider(
+                            "左右拖动翻页", 1, total_pages, key=page_slider_key)
+                        if selected_page != page:
+                            save_reading_position(book_id, selected_page - 1)
+                            st.session_state[force_key] = True
+                            st.rerun()
+                    else:
+                        st.caption("本 PDF 只有 1 页。")
 
-                        prev_col, info_col, next_col = st.columns([1, 2, 1])
-                        with prev_col:
-                            if st.button("⬅️ 上一页", disabled=page <= 1,
-                                         key=f"pdf_prev_{book_id}"):
-                                save_reading_position(book_id, page - 2)
-                                st.session_state[force_key] = True
-                                st.rerun()
-                        with info_col:
-                            st.markdown(
-                                f"<div style='text-align:center;padding-top:6px'>"
-                                f"第 {page} / {total_pages} 页</div>",
-                                unsafe_allow_html=True)
-                        with next_col:
-                            if st.button("下一页 ➡️", disabled=page >= total_pages,
-                                         key=f"pdf_next_{book_id}"):
-                                save_reading_position(book_id, page)
-                                st.session_state[force_key] = True
-                                st.rerun()
+                    prev_col, info_col, next_col = st.columns([1, 2, 1])
+                    with prev_col:
+                        if st.button("⬅️ 上一页", disabled=page <= 1,
+                                     key=f"pdf_prev_{book_id}"):
+                            save_reading_position(book_id, page - 2)
+                            st.session_state[force_key] = True
+                            st.rerun()
+                    with info_col:
+                        st.markdown(
+                            f"<div style='text-align:center;padding-top:6px'>"
+                            f"第 {page} / {total_pages} 页</div>",
+                            unsafe_allow_html=True)
+                    with next_col:
+                        if st.button("下一页 ➡️", disabled=page >= total_pages,
+                                     key=f"pdf_next_{book_id}"):
+                            save_reading_position(book_id, page)
+                            st.session_state[force_key] = True
+                            st.rerun()
                     st.caption("原文件下载已关闭，仅提供在线阅读。")
-                else:
-                    st.warning("未找到 PDF 原文件。")
             else:
                 st.warning(
                     "该文件未能提取出可阅读文字，可能是扫描版或旧版 DOC/WPS 格式，"
