@@ -10,6 +10,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import uuid
 import zipfile
 from datetime import datetime
 
@@ -349,6 +350,13 @@ def ensure_schema(conn):
                   position INTEGER DEFAULT 0,
                   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
 
+    c.execute('''CREATE TABLE IF NOT EXISTS reading_progress_users
+                 (book_id INTEGER NOT NULL,
+                  user_key TEXT NOT NULL,
+                  position INTEGER DEFAULT 0,
+                  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (book_id, user_key))''')
+
     c.execute('''CREATE INDEX IF NOT EXISTS idx_books_category
                  ON books(category, title)''')
 
@@ -458,7 +466,24 @@ if not status:
 
 
 def get_connection():
-    return sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=10000")
+    except sqlite3.DatabaseError:
+        pass
+    return conn
+
+
+def get_reader_key():
+    """每个浏览器会话一个阅读身份，避免多人互相覆盖阅读进度。"""
+    try:
+        if "reader_key" not in st.session_state:
+            st.session_state["reader_key"] = uuid.uuid4().hex
+        return st.session_state["reader_key"]
+    except Exception:
+        return "anonymous"
 
 
 def verify_admin_password(password):
@@ -1234,27 +1259,35 @@ def render_pdf_page_cached(book_id, data, page_index):
                 pass
 
 
-def get_reading_position(book_id):
+def get_reading_position(book_id, user_key=None):
+    user_key = user_key or get_reader_key()
     try:
         conn = get_connection()
         try:
             row = conn.execute(
+                "SELECT position FROM reading_progress_users "
+                "WHERE book_id=? AND user_key=?", (book_id, user_key)).fetchone()
+            if row and row[0] is not None:
+                return int(row[0])
+            legacy = conn.execute(
                 "SELECT position FROM reading_progress WHERE book_id=?", (book_id,)).fetchone()
-            return int(row[0]) if row and row[0] is not None else 0
+            return int(legacy[0]) if legacy and legacy[0] is not None else 0
         finally:
             conn.close()
     except Exception:
         return 0
 
 
-def save_reading_position(book_id, position):
+def save_reading_position(book_id, position, user_key=None):
+    user_key = user_key or get_reader_key()
     try:
         conn = get_connection()
         try:
             conn.execute(
-                "INSERT OR REPLACE INTO reading_progress (book_id, position, updated_at) "
-                "VALUES (?, ?, CURRENT_TIMESTAMP)",
-                (book_id, max(0, int(position))))
+                "INSERT OR REPLACE INTO reading_progress_users "
+                "(book_id, user_key, position, updated_at) "
+                "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                (book_id, user_key, max(0, int(position))))
             conn.commit()
         finally:
             conn.close()
@@ -3484,6 +3517,8 @@ elif page == "⚙️ 典藏后台管理系统":
                     try:
                         conn.execute(
                             "DELETE FROM reading_progress WHERE book_id=?", (del_book_id,))
+                        conn.execute(
+                            "DELETE FROM reading_progress_users WHERE book_id=?", (del_book_id,))
                         conn.execute(
                             "DELETE FROM book_files WHERE book_id=?", (del_book_id,))
                         cur = conn.execute("DELETE FROM books WHERE id=?", (del_book_id,))
