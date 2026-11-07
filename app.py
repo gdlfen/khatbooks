@@ -1075,6 +1075,16 @@ def upload_db_to_github_backup(token):
     release = response.json()
     release_id = release["id"]
 
+    # WAL 模式下先把日志合并回主库，确保上传的 .db 包含最新数据
+    try:
+        checkpoint = sqlite3.connect(DB_FILE, timeout=30)
+        try:
+            checkpoint.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            checkpoint.close()
+    except Exception:
+        pass
+
     asset_name = f"tcm_database_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
     with open(DB_FILE, "rb") as source:
         upload = requests.post(
